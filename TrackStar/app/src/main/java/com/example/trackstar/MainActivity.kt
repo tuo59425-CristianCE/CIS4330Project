@@ -18,15 +18,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.trackstar.ui.theme.TrackStarMobileAppTheme // Added import
+import com.example.trackstar.ui.theme.TrackStarMobileAppTheme
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Set initial volume to 10%
+        adjustVolumeBasedOnSpeed(this, 0f)
+
         setContent {
-            TrackStarMobileAppTheme { // Use the custom theme
+            TrackStarMobileAppTheme {
                 MainScreen()
             }
         }
@@ -36,13 +39,69 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    var speed by remember { mutableStateOf(0.0f) } // Speed state
-    var volumeProgress by remember { mutableStateOf(0f) } // Volume progress state
+    var speed by remember { mutableStateOf(0.0f) }
+    var volumeProgress by remember { mutableStateOf(0f) }
+    var isTracking by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        startAccelerometerTracking(context) { newSpeed ->
-            speed = newSpeed
-            volumeProgress = adjustVolumeBasedOnSpeed(context, speed) // Update volume progress
+    // Sensor setup
+    val sensorManager = remember {
+        context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    }
+    var sensorListener: SensorEventListener? by remember { mutableStateOf(null) }
+
+    // Start Tracking Function
+    fun startTracking() {
+        if (sensorListener == null) {
+            val listener = object : SensorEventListener {
+                var lastUpdateTime = System.currentTimeMillis()
+                var lastVelocity = 0f
+
+                override fun onSensorChanged(event: SensorEvent?) {
+                    if (event == null) return
+
+                    val currentTime = System.currentTimeMillis()
+                    val timeDiff = (currentTime - lastUpdateTime) / 1000.0f
+                    lastUpdateTime = currentTime
+
+                    val acceleration = sqrt(
+                        event.values[0] * event.values[0] +
+                                event.values[1] * event.values[1] +
+                                event.values[2] * event.values[2]
+                    ) - 9.81f
+
+                    val newSpeed = lastVelocity + acceleration * timeDiff
+                    val decayFactor = 0.95f
+                    if (acceleration < 0.1f) {
+                        lastVelocity *= decayFactor
+                    } else {
+                        lastVelocity = newSpeed
+                    }
+
+                    lastVelocity = lastVelocity.coerceAtLeast(0f)
+                    speed = lastVelocity
+                    volumeProgress = adjustVolumeBasedOnSpeed(context, speed)
+                }
+
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+
+            val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
+            sensorListener = listener
+            isTracking = true
+            Toast.makeText(context, "Tracking Started", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Stop Tracking Function
+    fun stopTracking() {
+        sensorListener?.let {
+            sensorManager.unregisterListener(it)
+            sensorListener = null
+            isTracking = false
+            speed = 0f
+            volumeProgress = adjustVolumeBasedOnSpeed(context, 0f)
+            Toast.makeText(context, "Tracking Stopped", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -53,120 +112,93 @@ fun MainScreen() {
     ) {
         Text(
             text = "Welcome to TrackStar",
-            style = MaterialTheme.typography.headlineLarge,
-            fontSize = 24.sp
+            style = MaterialTheme.typography.headlineLarge
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         Text(
             text = "Speed: ${String.format("%.2f", speed)} m/s",
             style = MaterialTheme.typography.bodyMedium,
-            fontSize = 20.sp
+            color = MaterialTheme.colorScheme.secondary
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
-        Button(onClick = {
-            Toast.makeText(context, "Tracking Started", Toast.LENGTH_SHORT).show()
-        }) {
+        Button(
+            onClick = { startTracking() },
+            enabled = !isTracking,
+            modifier = Modifier.fillMaxWidth()
+        ) {
             Text("Start Tracking")
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Button(onClick = {
-            Toast.makeText(context, "Tracking Stopped", Toast.LENGTH_SHORT).show()
-        }) {
+        Button(
+            onClick = { stopTracking() },
+            enabled = isTracking,
+            modifier = Modifier.fillMaxWidth()
+        ) {
             Text("Stop Tracking")
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
-        Text("Volume will increase as speed increases.")
+        Text(
+            text = "Volume will increase as speed increases.",
+            style = MaterialTheme.typography.bodyLarge
+        )
 
-        // Volume Progress Bar
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(text = "Volume Level", fontSize = 16.sp)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "Volume Level",
+            style = MaterialTheme.typography.labelLarge
+        )
+
         LinearProgressIndicator(
             progress = volumeProgress,
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.primary
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surface
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Volume: ${(volumeProgress * 100).toInt()}%",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.secondary
         )
     }
 }
 
-
-/** Start tracking speed using accelerometer */
-fun startAccelerometerTracking(context: Context, onSpeedUpdate: (Float) -> Unit) {
-    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-
-    val sensorListener = object : SensorEventListener {
-        var lastUpdateTime = System.currentTimeMillis()
-        var lastVelocity = 0f
-        var lastAcceleration = 0f // Track previous acceleration to apply decay
-
-        override fun onSensorChanged(event: SensorEvent?) {
-            if (event == null) return
-
-            val currentTime = System.currentTimeMillis()
-            val timeDiff = (currentTime - lastUpdateTime) / 1000.0f // Time in seconds
-            lastUpdateTime = currentTime
-
-            // Calculate acceleration magnitude (vector sum)
-            val acceleration = sqrt(event.values[0] * event.values[0] +
-                    event.values[1] * event.values[1] +
-                    event.values[2] * event.values[2]) - 9.81f // Subtract gravity
-
-            // Calculate speed based on acceleration
-            val newSpeed = lastVelocity + acceleration * timeDiff // v = u + at
-
-            // Apply a decay to the speed when there's little or no acceleration
-            val decayFactor = 0.95f // This factor controls how quickly the speed decays
-            if (acceleration < 0.1f) { // If the acceleration is small, reduce the speed slowly
-                lastVelocity *= decayFactor // Gradually reduce the speed
-            } else {
-                lastVelocity = newSpeed // Update speed based on acceleration
-            }
-
-            // Ensure speed doesn't go negative
-            lastVelocity = lastVelocity.coerceAtLeast(0f)
-
-            onSpeedUpdate(lastVelocity) // Update the speed state
-        }
-
-        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-    }
-
-    sensorManager.registerListener(sensorListener, accelerometer, SensorManager.SENSOR_DELAY_UI)
-}
-
-
-/** Adjust volume based on speed and return the volume percentage */
+/** Adjust volume based on speed and return volume progress (0.0 to 1.0) */
 fun adjustVolumeBasedOnSpeed(context: Context, speed: Float): Float {
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
 
-    // Speed thresholds (adjustable)
     val volume = when {
-        speed > 5 -> maxVolume // Full volume if speed > 5 m/s
-        speed > 2 -> (maxVolume * 0.7).toInt() // 70% volume if speed > 2 m/s
-        else -> (maxVolume * 0.4).toInt() // 40% volume otherwise
+        speed > 5 -> maxVolume
+        speed > 3 -> (maxVolume * 0.7).toInt()
+        speed > 2 -> (maxVolume * 0.5).toInt()
+        speed > 0.5 -> (maxVolume * 0.2).toInt()
+        else -> (maxVolume * 0.0).toInt()
     }
 
-    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+    // This will show the volume slider
+    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, AudioManager.FLAG_SHOW_UI)
 
-    // Return the volume progress as a fraction of the max volume
     return volume.toFloat() / maxVolume
 }
-
 
 @Preview(showBackground = true)
 @Composable
 fun DefaultPreview() {
-    TrackStarMobileAppTheme { // Use the custom theme
+    TrackStarMobileAppTheme {
         MainScreen()
     }
 }
-
