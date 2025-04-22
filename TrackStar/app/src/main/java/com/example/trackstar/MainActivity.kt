@@ -1,5 +1,6 @@
 package com.example.trackstar
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -17,16 +18,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.trackstar.ui.theme.TrackStarMobileAppTheme
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Set initial volume to 10%
-        adjustVolumeBasedOnSpeed(this, 0f)
 
         setContent {
             TrackStarMobileAppTheme {
@@ -36,20 +33,21 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@SuppressLint("DefaultLocale")
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    var speed by remember { mutableStateOf(0.0f) }
-    var volumeProgress by remember { mutableStateOf(0f) }
+    var speed by remember { mutableFloatStateOf(0.0f) }
+    var volumeProgress by remember { mutableFloatStateOf(0f) }
     var isTracking by remember { mutableStateOf(false) }
+    var minVolumeLevel by remember { mutableFloatStateOf(0f) } // 0% to 100%
+    var maxVolumeLevel by remember { mutableFloatStateOf(1f) } // 0% to 100%
 
-    // Sensor setup
     val sensorManager = remember {
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     }
     var sensorListener: SensorEventListener? by remember { mutableStateOf(null) }
 
-    // Start Tracking Function
     fun startTracking() {
         if (sensorListener == null) {
             val listener = object : SensorEventListener {
@@ -63,23 +61,23 @@ fun MainScreen() {
                     val timeDiff = (currentTime - lastUpdateTime) / 1000.0f
                     lastUpdateTime = currentTime
 
-                    val acceleration = sqrt(
+                    val rawAccel = sqrt(
                         event.values[0] * event.values[0] +
                                 event.values[1] * event.values[1] +
                                 event.values[2] * event.values[2]
-                    ) - 9.81f
+                    )
+
+                    val acceleration = (rawAccel - 9.81f).coerceIn(-5f, 5f) // clamp wild spikes
+
 
                     val newSpeed = lastVelocity + acceleration * timeDiff
                     val decayFactor = 0.95f
-                    if (acceleration < 0.1f) {
-                        lastVelocity *= decayFactor
-                    } else {
-                        lastVelocity = newSpeed
-                    }
-
+                    lastVelocity = if (acceleration < 0.1f) lastVelocity * decayFactor else newSpeed
                     lastVelocity = lastVelocity.coerceAtLeast(0f)
+
                     speed = lastVelocity
-                    volumeProgress = adjustVolumeBasedOnSpeed(context, speed)
+                    volumeProgress =
+                        adjustVolumeBasedOnSpeed(context, speed, minVolumeLevel, maxVolumeLevel)
                 }
 
                 override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -93,14 +91,13 @@ fun MainScreen() {
         }
     }
 
-    // Stop Tracking Function
     fun stopTracking() {
         sensorListener?.let {
             sensorManager.unregisterListener(it)
             sensorListener = null
             isTracking = false
             speed = 0f
-            volumeProgress = adjustVolumeBasedOnSpeed(context, 0f)
+            volumeProgress = adjustVolumeBasedOnSpeed(context, 0f, minVolumeLevel, maxVolumeLevel)
             Toast.makeText(context, "Tracking Stopped", Toast.LENGTH_SHORT).show()
         }
     }
@@ -110,11 +107,7 @@ fun MainScreen() {
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(
-            text = "Welcome to TrackStar",
-            style = MaterialTheme.typography.headlineLarge
-        )
-
+        Text("Welcome to TrackStar", style = MaterialTheme.typography.headlineLarge)
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
@@ -122,7 +115,6 @@ fun MainScreen() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.secondary
         )
-
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
@@ -145,54 +137,82 @@ fun MainScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        Text("Volume will increase as speed increases.")
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Volume Level", style = MaterialTheme.typography.labelLarge)
+        LinearProgressIndicator(
+            progress = { volumeProgress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp),
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Volume will increase as speed increases.",
+            "Volume: ${(volumeProgress * 100).toInt()}%",
             style = MaterialTheme.typography.bodyLarge
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
-            text = "Volume Level",
+            "Min Volume: ${(minVolumeLevel * 100).toInt()}%",
             style = MaterialTheme.typography.labelLarge
         )
-
-        LinearProgressIndicator(
-            progress = volumeProgress,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp),
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surface
+        Slider(
+            value = minVolumeLevel,
+            onValueChange = { minVolumeLevel = it.coerceAtMost(maxVolumeLevel) },
+            valueRange = 0f..1f
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Volume: ${(volumeProgress * 100).toInt()}%",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.secondary
+            "Max Volume: ${(maxVolumeLevel * 100).toInt()}%",
+            style = MaterialTheme.typography.labelLarge
+        )
+        Slider(
+            value = maxVolumeLevel,
+            onValueChange = { maxVolumeLevel = it.coerceAtLeast(minVolumeLevel) },
+            valueRange = 0f..1f
         )
     }
 }
 
-/** Adjust volume based on speed and return volume progress (0.0 to 1.0) */
-fun adjustVolumeBasedOnSpeed(context: Context, speed: Float): Float {
-    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+private var currentVolume = -1
 
-    val volume = when {
-        speed > 5 -> maxVolume
-        speed > 3 -> (maxVolume * 0.7).toInt()
-        speed > 2 -> (maxVolume * 0.5).toInt()
-        speed > 0.5 -> (maxVolume * 0.2).toInt()
-        else -> (maxVolume * 0.0).toInt()
+fun adjustVolumeBasedOnSpeed(
+    context: Context,
+    speed: Float,
+    minVolumePercent: Float,
+    maxVolumePercent: Float
+): Float {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+
+    val clampedSpeed = speed.coerceIn(0f, 6f)
+    val speedRatio = clampedSpeed / 6f
+
+    val minVolume = (minVolumePercent * maxSystemVolume).toInt()
+    val maxVolume = (maxVolumePercent * maxSystemVolume).toInt()
+
+    val targetVolume = (minVolume + (speedRatio * (maxVolume - minVolume))).toInt()
+
+    if (currentVolume == -1) {
+        currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
     }
 
-    // This will show the volume slider
-    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, AudioManager.FLAG_SHOW_UI)
+    if (currentVolume < targetVolume) currentVolume += 1
+    else if (currentVolume > targetVolume) currentVolume -= 1
 
-    return volume.toFloat() / maxVolume
+    audioManager.setStreamVolume(
+        AudioManager.STREAM_MUSIC,
+        currentVolume,
+        AudioManager.FLAG_SHOW_UI
+    )
+
+    return currentVolume.toFloat() / maxSystemVolume
 }
 
 @Preview(showBackground = true)
