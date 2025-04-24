@@ -57,25 +57,30 @@ fun MainScreen() {
                 override fun onSensorChanged(event: SensorEvent?) {
                     if (event == null) return
 
+
                     val currentTime = System.currentTimeMillis()
                     val timeDiff = (currentTime - lastUpdateTime) / 1000.0f
                     lastUpdateTime = currentTime
 
+                    // 1. Sensing: Collect raw sensor data (accelerometer values)
                     val rawAccel = sqrt(
                         event.values[0] * event.values[0] +
                                 event.values[1] * event.values[1] +
                                 event.values[2] * event.values[2]
                     )
 
+                    // 2. Processing: Filter out gravity and clamp extreme spikes
                     val acceleration = (rawAccel - 9.81f).coerceIn(-5f, 5f) // clamp wild spikes
 
-
+                    // 3. Feature Extraction: Use acceleration to calculate speed
                     val newSpeed = lastVelocity + acceleration * timeDiff
                     val decayFactor = 0.95f
                     lastVelocity = if (acceleration < 0.1f) lastVelocity * decayFactor else newSpeed
                     lastVelocity = lastVelocity.coerceAtLeast(0f)
 
                     speed = lastVelocity
+
+                    // 4. Classification/Decision: Use speed to control volume
                     volumeProgress =
                         adjustVolumeBasedOnSpeed(context, speed, minVolumeLevel, maxVolumeLevel)
                 }
@@ -86,6 +91,14 @@ fun MainScreen() {
             val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
             sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
             sensorListener = listener
+            // Force volume to min when tracking starts
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val minVolume = (minVolumeLevel * maxSystemVolume).toInt()
+            currentVolume = minVolume
+            lastVolumeMilestone = -1 // reset milestone so system UI won't instantly pop
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, minVolume, 0)
+
             isTracking = true
             Toast.makeText(context, "Tracking Started", Toast.LENGTH_SHORT).show()
         }
@@ -97,7 +110,17 @@ fun MainScreen() {
             sensorListener = null
             isTracking = false
             speed = 0f
-            volumeProgress = adjustVolumeBasedOnSpeed(context, 0f, minVolumeLevel, maxVolumeLevel)
+
+            // Reset the system volume to 0%
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, AudioManager.FLAG_SHOW_UI)
+
+            // Reset volume tracking state so auto-adjusting logic doesn’t interfere
+            currentVolume = -1
+            lastVolumeMilestone = -1
+            volumeProgress = 0f
+
             Toast.makeText(context, "Tracking Stopped", Toast.LENGTH_SHORT).show()
         }
     }
@@ -181,6 +204,8 @@ fun MainScreen() {
 }
 
 private var currentVolume = -1
+private var lastVolumeMilestone = -1
+
 
 fun adjustVolumeBasedOnSpeed(
     context: Context,
@@ -196,20 +221,44 @@ fun adjustVolumeBasedOnSpeed(
 
     val minVolume = (minVolumePercent * maxSystemVolume).toInt()
     val maxVolume = (maxVolumePercent * maxSystemVolume).toInt()
-
-    val targetVolume = (minVolume + (speedRatio * (maxVolume - minVolume))).toInt()
+    val targetVolume = if (speed < 0.1f || (minVolume == 0 && speed < 0.5f)) {
+        minVolume
+    } else {
+        (minVolume + (speedRatio * (maxVolume - minVolume))).toInt()
+    }
 
     if (currentVolume == -1) {
         currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
     }
 
-    if (currentVolume < targetVolume) currentVolume += 1
-    else if (currentVolume > targetVolume) currentVolume -= 1
+    val volumeDifference = targetVolume - currentVolume
+    if (volumeDifference > 2) currentVolume += 1
+    else if (volumeDifference < -2) currentVolume -= 1
+
+    currentVolume = currentVolume.coerceIn(0, maxSystemVolume)
+
+    // Calculate volume % milestone (0, 25, 50, 75, 100)
+    val volumePercent = (currentVolume.toFloat() / maxSystemVolume) * 100
+    val milestone = when {
+        volumePercent >= 100 -> 100
+        volumePercent >= 75 -> 75
+        volumePercent >= 50 -> 50
+        volumePercent >= 25 -> 25
+        else -> 0
+    }
+
+    // Only show system UI if we've crossed into a new milestone
+    val showUI = if (milestone != lastVolumeMilestone) {
+        lastVolumeMilestone = milestone
+        true
+    } else {
+        false
+    }
 
     audioManager.setStreamVolume(
         AudioManager.STREAM_MUSIC,
         currentVolume,
-        AudioManager.FLAG_SHOW_UI
+        if (showUI) AudioManager.FLAG_SHOW_UI else 0
     )
 
     return currentVolume.toFloat() / maxSystemVolume
